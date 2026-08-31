@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+motor
+adafruit-io
+dnspython
