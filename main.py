@@ -1,6 +1,6 @@
 import os
 from fastapi import FastAPI
-from adafruit_io import Client
+from Adafruit_IO import Client
 from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime
 
