@@ -13,17 +13,31 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(
+    DATABASE_URL, 
+    pool_pre_ping=True,
+    connect_args={"sslmode": "require"} # Supabase requires SSL
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- DATABASE MODELS (The Tables) ---
+# # --- DATABASE MODELS (The Tables) ---
+# class User(Base):
+#     __tablename__ = "users"
+#     id = Column(Integer, primary_key=True, index=True)
+#     ldrid = Column(String, unique=True, index=True) # e.g., ldr001
+#     email = Column(String, unique=True)
+#     deviceid = Column(String) # The Adafruit Feed name for their specific lamp
+
+# --- DATABASE MODELS ---
 class User(Base):
     __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
-    ldrid = Column(String, unique=True, index=True) # e.g., ldr001
+    # We tell SQLAlchemy that 'ldrid' is the Primary Key, not 'id'
+    ldrid = Column(String, primary_key=True) 
+    name = Column(String)
     email = Column(String, unique=True)
-    deviceid = Column(String) # The Adafruit Feed name for their specific lamp
+    phone = Column(String) # Matches the 'numeric' column in your Supabase
+    deviceid = Column(String)
 
 class VibeLog(Base):
     __tablename__ = "vibe_logs"
