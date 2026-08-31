@@ -59,16 +59,26 @@ class User(Base):
     email = Column(String, unique=True)
     deviceid = Column(String)
 
+# class VibeLog(Base):
+#     __tablename__ = "vibe_logs"
+#     # If your vibe_logs table in Supabase doesn't have an 'id', 
+#     # we use 'timestamp' as the primary key for the code to work.
+#     # If it DOES have an 'id' column, you can add: id = Column(Integer, primary_key=True)
+#     timestamp = Column(DateTime, primary_key=True, default=datetime.utcnow)
+#     sender_ldrid = Column(String)
+#     receiver_ldrid = Column(String)
+#     vibe_type = Column(String)
+#     hex_color = Column(String)
+
 class VibeLog(Base):
     __tablename__ = "vibe_logs"
-    # If your vibe_logs table in Supabase doesn't have an 'id', 
-    # we use 'timestamp' as the primary key for the code to work.
-    # If it DOES have an 'id' column, you can add: id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, primary_key=True, default=datetime.utcnow)
+    id = Column(Integer, primary_key=True, index=True) # Unique ID for each message
     sender_ldrid = Column(String)
     receiver_ldrid = Column(String)
     vibe_type = Column(String)
     hex_color = Column(String)
+    status = Column(String, default="pending") # 'pending' or 'executed'
+    timestamp = Column(DateTime, default=datetime.utcnow)
 
 # Create the tables in Supabase if they don't exist
 Base.metadata.create_all(bind=engine)
@@ -86,8 +96,8 @@ COLOR_MAP = {
     "MISS": "#0000FF",      # Blue
     "SORRY": "#FFFF00",     # Yellow
     "MAD": "#FFA500",       # Orange
-    "THINKING OF YOU": "#FFC0CB",   # Pink
-    "FEELING FEAKY": "#800080" #PURPLE
+    "THINKING": "#FFC0CB",   # Pink
+    "FEELING": "#800080" #PURPLE
 }
 
 # --- ROUTES ---
@@ -147,6 +157,30 @@ async def send_vibe(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
+
+# 1. The Device asks: "What did I miss?"
+@app.get("/get-pending")
+async def get_pending(ldrid: str):
+    db = SessionLocal()
+    # Find all vibes for this user that are still 'pending'
+    pending_vibes = db.query(VibeLog).filter(
+        VibeLog.receiver_ldrid == ldrid, 
+        VibeLog.status == "pending"
+    ).all()
+    db.close()
+    return pending_vibes
+
+# 2. The Device says: "I'm done with these!"
+@app.post("/mark-executed")
+async def mark_executed(vibe_ids: list[int]):
+    db = SessionLocal()
+    # Update the status of all these IDs to 'executed'
+    db.query(VibeLog).filter(VibeLog.id.in_(vibe_ids)).update(
+        {"status": "executed"}, synchronize_session=False
+    )
+    db.commit()
+    db.close()
+    return {"status": "Updated"}
 
 # --- ADMIN ROUTE: Register a User ---
 # You can use this to add yourself and your partner to the database initially
