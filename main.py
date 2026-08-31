@@ -18,31 +18,66 @@ def home():
 @app.get("/send-vibe")
 async def send_vibe(from_user: str, to_user: str, vibe: str):
     try:
-        # 1. Initialize Clients inside the route
-        aio = Client(AIO_USERNAME, AIO_KEY)
-        # We add tlsAllowInvalidCertificates=True only if the Python version is still acting up
-        db_client = AsyncIOMotorClient(MONGO_URL)
-        db = db_client.ldr_lamp_db
-
-        # 2. Log to Database (Async)
-        log_entry = {
-            "sender": from_user,
-            "receiver": to_user,
-            "vibe": vibe,
+        # 1. Create a "Translation Map"
+        # This translates your vibes into Hex colors the dashboard understands
+        colors = {
+            "BLUE": "#0000FF",      # I Miss You
+            "RED": "#FF0000",       # I Love You
+            "YELLOW": "#FFFF00",    # I'm Sorry
+            "ORANGE": "#FFA500",    # I'm Mad
+            "PINK": "#FFC0CB"       # Thinking of you
         }
-        # Use await to make sure it's asynchronous
+
+        # 2. Get the Hex code. If the vibe isn't in the list, default to White (#FFFFFF)
+        hex_color = colors.get(vibe.upper(), "#FFFFFF")
+
+        # 3. Connect to clients
+        db_client = AsyncIOMotorClient(MONGO_URL, tlsAllowInvalidCertificates=True)
+        db = db_client.ldr_lamp_db
+        aio = Client(AIO_USERNAME, AIO_KEY)
+
+        # 4. Log to Database
+        log_entry = {"sender": from_user, "receiver": to_user, "vibe": vibe, "hex": hex_color}
         await db.vibe_logs.insert_one(log_entry)
 
-        # 3. Send to Adafruit (This is a synchronous library call)
-        # We wrap it in a thread so it doesn't block the async server
+        # 5. Send the HEX CODE to Adafruit, not the word
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, aio.send_data, 'lamp-command', vibe)
+        await loop.run_in_executor(None, aio.send_data, 'lamp-command', hex_color)
         
-        return {"status": "Success", "vibe_sent": vibe}
+        return {"status": "Success", "vibe_sent": vibe, "hex": hex_color}
 
     except Exception as e:
         print(f"ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# @app.get("/send-vibe")
+# async def send_vibe(from_user: str, to_user: str, vibe: str):
+#     try:
+#         # 1. Initialize Clients inside the route
+#         aio = Client(AIO_USERNAME, AIO_KEY)
+#         # We add tlsAllowInvalidCertificates=True only if the Python version is still acting up
+#         db_client = AsyncIOMotorClient(MONGO_URL)
+#         db = db_client.ldr_lamp_db
+
+#         # 2. Log to Database (Async)
+#         log_entry = {
+#             "sender": from_user,
+#             "receiver": to_user,
+#             "vibe": vibe,
+#         }
+#         # Use await to make sure it's asynchronous
+#         await db.vibe_logs.insert_one(log_entry)
+
+#         # 3. Send to Adafruit (This is a synchronous library call)
+#         # We wrap it in a thread so it doesn't block the async server
+#         loop = asyncio.get_event_loop()
+#         await loop.run_in_executor(None, aio.send_data, 'lamp-command', vibe)
+        
+#         return {"status": "Success", "vibe_sent": vibe}
+
+#     except Exception as e:
+#         print(f"ERROR: {str(e)}")
+#         raise HTTPException(status_code=500, detail=str(e))
 
 
 # import os
