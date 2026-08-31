@@ -29,24 +29,46 @@ Base = declarative_base()
 #     email = Column(String, unique=True)
 #     deviceid = Column(String) # The Adafruit Feed name for their specific lamp
 
+# # --- DATABASE MODELS ---
+# class User(Base):
+#     __tablename__ = "users"
+#     # We tell SQLAlchemy that 'ldrid' is the Primary Key, not 'id'
+#     ldrid = Column(String, primary_key=True) 
+#     name = Column(String)
+#     email = Column(String, unique=True)
+#     phone = Column(String) # Matches the 'numeric' column in your Supabase
+#     deviceid = Column(String)
+
+# class VibeLog(Base):
+#     __tablename__ = "vibe_logs"
+#     id = Column(Integer, primary_key=True, index=True)
+#     sender_ldrid = Column(String)
+#     receiver_ldrid = Column(String)
+#     vibe_type = Column(String)
+#     hex_color = Column(String)
+#     timestamp = Column(DateTime, default=datetime.utcnow)
+
 # --- DATABASE MODELS ---
+
 class User(Base):
     __tablename__ = "users"
-    # We tell SQLAlchemy that 'ldrid' is the Primary Key, not 'id'
+    # We tell SQLAlchemy that 'ldrid' is the Primary Key. 
+    # Do NOT include a line for 'id' here.
     ldrid = Column(String, primary_key=True) 
     name = Column(String)
     email = Column(String, unique=True)
-    phone = Column(String) # Matches the 'numeric' column in your Supabase
     deviceid = Column(String)
 
 class VibeLog(Base):
     __tablename__ = "vibe_logs"
-    id = Column(Integer, primary_key=True, index=True)
+    # If your vibe_logs table in Supabase doesn't have an 'id', 
+    # we use 'timestamp' as the primary key for the code to work.
+    # If it DOES have an 'id' column, you can add: id = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime, primary_key=True, default=datetime.utcnow)
     sender_ldrid = Column(String)
     receiver_ldrid = Column(String)
     vibe_type = Column(String)
     hex_color = Column(String)
-    timestamp = Column(DateTime, default=datetime.utcnow)
 
 # Create the tables in Supabase if they don't exist
 Base.metadata.create_all(bind=engine)
