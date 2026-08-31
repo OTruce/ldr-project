@@ -1,6 +1,11 @@
+# fastapi
+# uvicorn
+# motor
+# adafruit-io
+# dnspython
+
 fastapi
 uvicorn
-motor
+sqlalchemy
+psycopg2-binary
 adafruit-io
-dnspython
-
