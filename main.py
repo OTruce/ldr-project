@@ -70,6 +70,13 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
+@app.get("/test-db")
+def test_db():
+    db = SessionLocal()
+    # This will just fetch every single user in your database
+    users = db.query(User).all()
+    db.close()
+    return users
 # --- 3. LOGIN & AUTH ROUTES ---
 
 @app.post("/request-otp")
