@@ -9,3 +9,4 @@ uvicorn
 sqlalchemy
 psycopg2-binary
 adafruit-io
+Resend
