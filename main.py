@@ -70,40 +70,86 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
-@app.get("/test-db")
-def test_db():
-    db = SessionLocal()
-    # This will just fetch every single user in your database
-    users = db.query(User).all()
-    db.close()
-    return users
+# @app.get("/test-db")
+# def test_db():
+#     db = SessionLocal()
+#     # This will just fetch every single user in your database
+#     users = db.query(User).all()
+#     db.close()
+#     return users
 # --- 3. LOGIN & AUTH ROUTES ---
+
+# @app.post("/request-otp")
+# async def request_otp(email: str):
+#     db = SessionLocal()
+#     try:
+#         # Check if user exists
+#         user = db.query(User).filter(User.email == email).first()
+#         if not user:
+#             raise HTTPException(status_code=404, detail="Email not found")
+
+#         # Generate 6-digit OTP
+#         otp_val = str(random.randint(100000, 999999))
+
+#         # Save to DB (Upsert)
+#         db.execute(text(
+#             "INSERT INTO otp_codes (email, code) VALUES (:e, :c) "
+#             "ON CONFLICT (email) DO UPDATE SET code = :c, created_at = now()"
+#         ), {"e": email, "c": otp_val})
+#         db.commit()
+
+#         # Send Email via Resend
+#         resend.Emails.send({
+#             "from": "LDR Lamp <onboarding@resend.dev>",
+#             "to": [email],
+#             "subject": f"{otp_val} is your LDR login code",
+#             "html": f"<p>Your login code is: <strong>{otp_val}</strong></p>"
+#         })
+
+#         return {"status": "OTP_SENT"}
+#     finally:
+#         db.close()
 
 @app.post("/request-otp")
 async def request_otp(email: str):
     db = SessionLocal()
     try:
-        # Check if user exists
-        user = db.query(User).filter(User.email == email).first()
+        clean_email = email.strip().lower()
+        
+        # 1. Check if user exists
+        user = db.query(User).filter(User.email == clean_email).first()
+        
+        # 2. IF NOT FOUND: Create a new user on the fly!
         if not user:
-            raise HTTPException(status_code=404, detail="Email not found")
+            # Generate a new LDRID (e.g., ldr + random number)
+            new_id = f"ldr{random.randint(1000, 9999)}"
+            # Generate a new DeviceID
+            new_device = f"esp{random.randint(1000, 9999)}"
+            
+            user = User(
+                ldrid=new_id, 
+                email=clean_email, 
+                name="New User", 
+                deviceid=new_device
+            )
+            db.add(user)
+            db.commit()
+            print(f"DEBUG: Created new user {new_id} for {clean_email}")
 
-        # Generate 6-digit OTP
+        # 3. Generate and Save OTP
         otp_val = str(random.randint(100000, 999999))
-
-        # Save to DB (Upsert)
         db.execute(text(
             "INSERT INTO otp_codes (email, code) VALUES (:e, :c) "
             "ON CONFLICT (email) DO UPDATE SET code = :c, created_at = now()"
-        ), {"e": email, "c": otp_val})
+        ), {"e": clean_email, "c": otp_val})
         db.commit()
 
-        # Send Email via Resend
+        # 4. Send Email
         resend.Emails.send({
             "from": "LDR Lamp <onboarding@resend.dev>",
-            "to": [email],
-            "subject": f"{otp_val} is your LDR login code",
-            "html": f"<p>Your login code is: <strong>{otp_val}</strong></p>"
+            "to": [clean_email],
+            "subject": f"{otp_val} is your login code",
+            "html": f"<p>Your LDR login code is: <strong>{otp_val}</strong></p>"
         })
 
         return {"status": "OTP_SENT"}
