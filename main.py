@@ -119,11 +119,26 @@ class LoveNote(Base):
     receiver_id = Column(String)
     lovenote = Column(Text)
 
-# Send or overwrite a note
+# 1. SEND NOTE: Rejects if you already sent a note in the last 7 days
 @app.post("/love-notes")
 async def create_love_note(sender_id: str, receiver_id: str, note: str):
     db = SessionLocal()
     try:
+        seven_days_ago = datetime.utcnow() - timedelta(days=7)
+        
+        # Check if an active note from this sender already exists
+        existing_active = db.query(LoveNote).filter(
+            LoveNote.ldrid == sender_id,
+            LoveNote.receiver_id == receiver_id,
+            LoveNote.created_at >= seven_days_ago
+        ).first()
+
+        if existing_active:
+            raise HTTPException(
+                status_code=400, 
+                detail="You have already posted an active note for this week."
+            )
+
         new_note = LoveNote(ldrid=sender_id, receiver_id=receiver_id, lovenote=note)
         db.add(new_note)
         db.commit()
@@ -131,12 +146,15 @@ async def create_love_note(sender_id: str, receiver_id: str, note: str):
     finally:
         db.close()
 
-# Fetch active notes between two partners (last 7 days)
+
+# 2. GET ACTIVE NOTES: Orders by newest first (latest note always wins)
 @app.get("/love-notes/active")
 async def get_active_love_notes(user1_id: str, user2_id: str):
     db = SessionLocal()
     try:
         seven_days_ago = datetime.utcnow() - timedelta(days=7)
+        
+        # Newest first (.desc()) ensures the latest message takes priority
         notes = db.query(LoveNote).filter(
             LoveNote.created_at >= seven_days_ago,
             or_(
@@ -144,9 +162,43 @@ async def get_active_love_notes(user1_id: str, user2_id: str):
                 (LoveNote.ldrid == user2_id) & (LoveNote.receiver_id == user1_id)
             )
         ).order_by(LoveNote.created_at.desc()).all()
+
         return notes
     finally:
         db.close()
+        
+# # Send or overwrite a note
+# @app.post("/love-notes")
+# async def create_love_note(sender_id: str, receiver_id: str, note: str):
+#     db = SessionLocal()
+#     try:
+#         new_note = LoveNote(ldrid=sender_id, receiver_id=receiver_id, lovenote=note)
+#         db.add(new_note)
+#         db.commit()
+#         return {"status": "SUCCESS"}
+#     finally:
+#         db.close()
+
+# # Fetch active notes between two partners (last 7 days)
+# @app.get("/love-notes/active")
+# async def get_active_love_notes(user1_id: str, user2_id: str):
+#     db = SessionLocal()
+#     try:
+#         seven_days_ago = datetime.utcnow() - timedelta(days=7)
+#         notes = db.query(LoveNote).filter(
+#             LoveNote.created_at >= seven_days_ago,
+#             or_(
+#                 (LoveNote.ldrid == user1_id) & (LoveNote.receiver_id == user2_id),
+#                 (LoveNote.ldrid == user2_id) & (LoveNote.receiver_id == user1_id)
+#             )
+#         ).order_by(LoveNote.created_at.desc()).all()
+#         return notes
+#     finally:
+#         db.close()
+
+
+
+
 
 ## Locket posts(random pics that last 24 hours with captions and reactions)
 
