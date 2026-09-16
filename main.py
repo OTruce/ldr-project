@@ -9,6 +9,9 @@ from sqlalchemy.orm import sessionmaker
 from Adafruit_IO import Client
 from fastapi import UploadFile, File, Form
 import resend
+import uuid
+from fastapi import UploadFile, File, Form, HTTPException
+from supabase import create_client, Client as SupabaseClient
 
 # --- 1. SETUP ---
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -18,6 +21,12 @@ if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, connect_args={"sslmode": "require"})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+# Supabase Storage Client
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- 2. MODELS ---
 
@@ -166,35 +175,6 @@ async def get_active_love_notes(user1_id: str, user2_id: str):
         return notes
     finally:
         db.close()
-        
-# # Send or overwrite a note
-# @app.post("/love-notes")
-# async def create_love_note(sender_id: str, receiver_id: str, note: str):
-#     db = SessionLocal()
-#     try:
-#         new_note = LoveNote(ldrid=sender_id, receiver_id=receiver_id, lovenote=note)
-#         db.add(new_note)
-#         db.commit()
-#         return {"status": "SUCCESS"}
-#     finally:
-#         db.close()
-
-# # Fetch active notes between two partners (last 7 days)
-# @app.get("/love-notes/active")
-# async def get_active_love_notes(user1_id: str, user2_id: str):
-#     db = SessionLocal()
-#     try:
-#         seven_days_ago = datetime.utcnow() - timedelta(days=7)
-#         notes = db.query(LoveNote).filter(
-#             LoveNote.created_at >= seven_days_ago,
-#             or_(
-#                 (LoveNote.ldrid == user1_id) & (LoveNote.receiver_id == user2_id),
-#                 (LoveNote.ldrid == user2_id) & (LoveNote.receiver_id == user1_id)
-#             )
-#         ).order_by(LoveNote.created_at.desc()).all()
-#         return notes
-#     finally:
-#         db.close()
 
 
 
@@ -210,6 +190,13 @@ class LocketPost(Base):
     image_url = Column(Text)
     caption = Column(String, nullable=True)
 
+class LocketView(Base):
+    __tablename__ = "locket_views"
+    id = Column(Integer, primary_key=True, index=True)
+    post_id = Column(Integer)
+    viewer_id = Column(String)
+    viewed_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
 class LocketReaction(Base):
     __tablename__ = "locket_reactions"
     id = Column(Integer, primary_key=True, index=True)
@@ -217,156 +204,255 @@ class LocketReaction(Base):
     reactor_id = Column(String)
     reaction = Column(String)
 
-# 1. Post a photo (Broadcast to all partners)
-@app.post("/locket/post")
-async def create_locket_post(
+# 1. UPLOAD REAL PHOTO FROM CAMERA
+@app.post("/locket/upload")
+async def upload_locket_photo(
     sender_id: str = Form(...),
-    image_url: str = Form(...),
-    caption: str = Form(None)
+    caption: str = Form(None),
+    file: UploadFile = File(...)
 ):
     db = SessionLocal()
     try:
-        post = LocketPost(sender_id=sender_id, image_url=image_url, caption=caption)
+        # Read file bytes & generate filename
+        file_bytes = await file.read()
+        file_name = f"{sender_id}_{uuid.uuid4().hex[:8]}.jpg"
+
+        # Upload to Supabase Storage bucket 'locket_images'
+        supabase.storage.from_("locket_images").upload(
+            file_name,
+            file_bytes,
+            file_options={"content-type": "image/jpeg"}
+        )
+        public_url = supabase.storage.from_("locket_images").get_public_url(file_name)
+
+        post = LocketPost(sender_id=sender_id, image_url=public_url, caption=caption)
         db.add(post)
         db.commit()
+        return {"status": "SUCCESS", "post_id": post.id, "image_url": public_url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+# 2. GET ACTIVE UNOPENED STACK (Only unviewed posts from partners)
+@app.get("/locket/stack")
+async def get_locket_stack(my_id: str):
+    db = SessionLocal()
+    try:
+        # Find all partners
+        relations = db.query(Relationship).filter(
+            or_(Relationship.user1ldrid == my_id, Relationship.user2ldrid == my_id)
+        ).all()
+        partner_ids = [r.user2ldrid if r.user1ldrid == my_id else r.user1ldrid for r in relations]
+        if not partner_ids:
+            return []
+
+        # Find posts already opened by me
+        viewed_subquery = db.query(LocketView.post_id).filter(LocketView.viewer_id == my_id)
+
+        # Fetch unviewed posts from partners
+        unopened_posts = db.query(LocketPost).filter(
+            LocketPost.sender_id.in_(partner_ids),
+            ~LocketPost.id.in_(viewed_subquery)
+        ).order_by(LocketPost.created_at.asc()).all() # Oldest first so user views in order
+
+        stack = []
+        for p in unopened_posts:
+            author = db.query(User).filter(User.ldrid == p.sender_id).first()
+            my_rx = db.query(LocketReaction).filter(
+                LocketReaction.post_id == p.id,
+                LocketReaction.reactor_id == my_id
+            ).first()
+            stack.append({
+                "id": p.id,
+                "sender_id": p.sender_id,
+                "sender_name": author.name if author else "Partner",
+                "image_url": p.image_url,
+                "caption": p.caption,
+                "created_at": p.created_at.isoformat(),
+                "my_reaction": my_rx.reaction if my_rx else None
+            })
+        return stack
+    finally:
+        db.close()
+
+
+# 3. MARK POST AS VIEWED (Makes it disappear from the active stack)
+@app.post("/locket/mark-viewed")
+async def mark_viewed(post_id: int = Query(...), viewer_id: str = Query(...)):
+    db = SessionLocal()
+    try:
+        exists = db.query(LocketView).filter(
+            LocketView.post_id == post_id,
+            LocketView.viewer_id == viewer_id
+        ).first()
+        if not exists:
+            db.add(LocketView(post_id=post_id, viewer_id=viewer_id))
+            db.commit()
         return {"status": "SUCCESS"}
     finally:
         db.close()
 
-# 2. Get active feed (all photos from all your linked partners in last 24h)
-@app.get("/locket/feed")
-async def get_locket_feed(my_id: str):
-    db = SessionLocal()
-    try:
-        # Step A: Find all partner IDs connected to you
-        relations = db.query(Relationship).filter(
-            or_(Relationship.user1ldrid == my_id, Relationship.user2ldrid == my_id)
-        ).all()
 
-        partner_ids = [
-            r.user2ldrid if r.user1ldrid == my_id else r.user1ldrid
-            for r in relations
-        ]
-
-        if not partner_ids:
-            return []
-
-        # Step B: Get posts from all partners within the last 24 hours
-        twenty_four_hours_ago = datetime.utcnow() - timedelta(hours=24)
-        posts = db.query(LocketPost).filter(
-            LocketPost.sender_id.in_(partner_ids),
-            LocketPost.created_at >= twenty_four_hours_ago
-        ).order_by(LocketPost.created_at.desc()).all()
-
-        # Step C: Attach sender's name and partner's reaction
-        feed_items = []
-        for post in posts:
-            author = db.query(User).filter(User.ldrid == post.sender_id).first()
-            my_reaction = db.query(LocketReaction).filter(
-                LocketReaction.post_id == post.id,
-                LocketReaction.reactor_id == my_id
-            ).first()
-
-            feed_items.append({
-                "id": post.id,
-                "sender_id": post.sender_id,
-                "sender_name": author.name if author else "Partner",
-                "image_url": post.image_url,
-                "caption": post.caption,
-                "created_at": post.created_at.isoformat(),
-                "my_reaction": my_reaction.reaction if my_reaction else None
-            })
-
-        return feed_items
-    finally:
-        db.close()
-
-# 3. React to a post
+# 4. REACT TO POST
 @app.post("/locket/react")
 async def react_to_post(post_id: int = Query(...), reactor_id: str = Query(...), reaction: str = Query(...)):
     db = SessionLocal()
     try:
-        # Upsert reaction: replace or create
         existing = db.query(LocketReaction).filter(
             LocketReaction.post_id == post_id,
             LocketReaction.reactor_id == reactor_id
         ).first()
-
         if existing:
             existing.reaction = reaction
         else:
             db.add(LocketReaction(post_id=post_id, reactor_id=reactor_id, reaction=reaction))
-
         db.commit()
         return {"status": "SUCCESS"}
     finally:
         db.close()
+
+
+# 5. MY HISTORY (Everything I posted)
+@app.get("/locket/my-history")
+async def get_my_history(my_id: str):
+    db = SessionLocal()
+    try:
+        posts = db.query(LocketPost).filter(
+            LocketPost.sender_id == my_id
+        ).order_by(LocketPost.created_at.desc()).all()
+
+        history = []
+        for p in posts:
+            reactions = db.query(LocketReaction).filter(LocketReaction.post_id == p.id).all()
+            history.append({
+                "id": p.id,
+                "image_url": p.image_url,
+                "caption": p.caption,
+                "created_at": p.created_at.isoformat(),
+                "reactions": [r.reaction for r in reactions]
+            })
+        return history
+    finally:
+        db.close()
+
+
+# 6. DELETE A POST
+@app.delete("/locket/delete/{post_id}")
+async def delete_post(post_id: int, my_id: str = Query(...)):
+    db = SessionLocal()
+    try:
+        post = db.query(LocketPost).filter(LocketPost.id == post_id, LocketPost.sender_id == my_id).first()
+        if not post:
+            raise HTTPException(status_code=404, detail="Post not found or unauthorized")
+        db.delete(post)
+        db.commit()
+        return {"status": "DELETED"}
+    finally:
+        db.close()
+
 
 # class LocketPost(Base):
 #     __tablename__ = "locket_posts"
 #     id = Column(Integer, primary_key=True, index=True)
 #     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 #     sender_id = Column(String)
-#     receiver_id = Column(String)
 #     image_url = Column(Text)
 #     caption = Column(String, nullable=True)
-#     reaction = Column(String, nullable=True)
 
-# # 1. Post a new Locket image
+# class LocketReaction(Base):
+#     __tablename__ = "locket_reactions"
+#     id = Column(Integer, primary_key=True, index=True)
+#     post_id = Column(Integer)
+#     reactor_id = Column(String)
+#     reaction = Column(String)
+
+# # 1. Post a photo (Broadcast to all partners)
 # @app.post("/locket/post")
 # async def create_locket_post(
 #     sender_id: str = Form(...),
-#     receiver_id: str = Form(...),
-#     caption: str = Form(None),
-#     image_url: str = Form(...) # URL returned after uploading to Supabase Storage
+#     image_url: str = Form(...),
+#     caption: str = Form(None)
 # ):
 #     db = SessionLocal()
 #     try:
-#         post = LocketPost(
-#             sender_id=sender_id,
-#             receiver_id=receiver_id,
-#             image_url=image_url,
-#             caption=caption
-#         )
+#         post = LocketPost(sender_id=sender_id, image_url=image_url, caption=caption)
 #         db.add(post)
 #         db.commit()
 #         return {"status": "SUCCESS"}
 #     finally:
 #         db.close()
 
-# # 2. Get active posts (last 24 hours only)
-# @app.get("/locket/active")
-# async def get_active_locket_posts(user_id: str, partner_id: str):
+# # 2. Get active feed (all photos from all your linked partners in last 24h)
+# @app.get("/locket/feed")
+# async def get_locket_feed(my_id: str):
 #     db = SessionLocal()
 #     try:
+#         # Step A: Find all partner IDs connected to you
+#         relations = db.query(Relationship).filter(
+#             or_(Relationship.user1ldrid == my_id, Relationship.user2ldrid == my_id)
+#         ).all()
+
+#         partner_ids = [
+#             r.user2ldrid if r.user1ldrid == my_id else r.user1ldrid
+#             for r in relations
+#         ]
+
+#         if not partner_ids:
+#             return []
+
+#         # Step B: Get posts from all partners within the last 24 hours
 #         twenty_four_hours_ago = datetime.utcnow() - timedelta(hours=24)
 #         posts = db.query(LocketPost).filter(
-#             LocketPost.created_at >= twenty_four_hours_ago,
-#             or_(
-#                 (LocketPost.sender_id == user_id) & (LocketPost.receiver_id == partner_id),
-#                 (LocketPost.sender_id == partner_id) & (LocketPost.receiver_id == user_id)
-#             )
+#             LocketPost.sender_id.in_(partner_ids),
+#             LocketPost.created_at >= twenty_four_hours_ago
 #         ).order_by(LocketPost.created_at.desc()).all()
-#         return posts
+
+#         # Step C: Attach sender's name and partner's reaction
+#         feed_items = []
+#         for post in posts:
+#             author = db.query(User).filter(User.ldrid == post.sender_id).first()
+#             my_reaction = db.query(LocketReaction).filter(
+#                 LocketReaction.post_id == post.id,
+#                 LocketReaction.reactor_id == my_id
+#             ).first()
+
+#             feed_items.append({
+#                 "id": post.id,
+#                 "sender_id": post.sender_id,
+#                 "sender_name": author.name if author else "Partner",
+#                 "image_url": post.image_url,
+#                 "caption": post.caption,
+#                 "created_at": post.created_at.isoformat(),
+#                 "my_reaction": my_reaction.reaction if my_reaction else None
+#             })
+
+#         return feed_items
 #     finally:
 #         db.close()
 
-# # 3. React to a photo
+# # 3. React to a post
 # @app.post("/locket/react")
-# async def react_to_post(post_id: int, reaction: str):
-#     valid_reactions = {"HEART", "HEART_EYES", "LAUGH", "THUMBS_UP", "CRY"}
-#     if reaction not in valid_reactions:
-#         raise HTTPException(status_code=400, detail="Invalid reaction type")
-
+# async def react_to_post(post_id: int = Query(...), reactor_id: str = Query(...), reaction: str = Query(...)):
 #     db = SessionLocal()
 #     try:
-#         post = db.query(LocketPost).filter(LocketPost.id == post_id).first()
-#         if not post:
-#             raise HTTPException(status_code=404, detail="Post not found")
-#         post.reaction = reaction
+#         # Upsert reaction: replace or create
+#         existing = db.query(LocketReaction).filter(
+#             LocketReaction.post_id == post_id,
+#             LocketReaction.reactor_id == reactor_id
+#         ).first()
+
+#         if existing:
+#             existing.reaction = reaction
+#         else:
+#             db.add(LocketReaction(post_id=post_id, reactor_id=reactor_id, reaction=reaction))
+
 #         db.commit()
-#         return {"status": "SUCCESS", "reaction": reaction}
+#         return {"status": "SUCCESS"}
 #     finally:
 #         db.close()
+
+
 
 # Include your existing request-otp, verify-otp, and health routes here...
