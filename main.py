@@ -3,7 +3,7 @@ import random
 import asyncio
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Query, Body
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, text, or_
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, text, or_
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from Adafruit_IO import Client
@@ -117,7 +117,7 @@ class LoveNote(Base):
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     ldrid = Column(String)
     receiver_id = Column(String)
-    lovenote = Column(text)
+    lovenote = Column(Text)
 
 # Send or overwrite a note
 @app.post("/love-notes")
@@ -156,7 +156,7 @@ class LocketPost(Base):
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     sender_id = Column(String)
     receiver_id = Column(String)
-    image_url = Column(text)
+    image_url = Column(Text)
     caption = Column(String, nullable=True)
     reaction = Column(String, nullable=True)
 
