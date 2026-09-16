@@ -18,3 +18,4 @@ psycopg2-binary
 adafruit-io
 resend
 python-multipart
+supabase
