@@ -117,7 +117,7 @@ class LoveNote(Base):
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     ldrid = Column(String)
     receiver_id = Column(String)
-    lovenote = Column(Text)
+    lovenote = Column(text)
 
 # Send or overwrite a note
 @app.post("/love-notes")
@@ -156,7 +156,7 @@ class LocketPost(Base):
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     sender_id = Column(String)
     receiver_id = Column(String)
-    image_url = Column(Text)
+    image_url = Column(text)
     caption = Column(String, nullable=True)
     reaction = Column(String, nullable=True)
 
