@@ -4,9 +4,17 @@
 # adafruit-io
 # dnspython
 
+# fastapi
+# uvicorn
+# sqlalchemy
+# psycopg2-binary
+# adafruit-io
+# Resend
+
 fastapi
 uvicorn
 sqlalchemy
 psycopg2-binary
 adafruit-io
-Resend
+resend
+python-multipart
