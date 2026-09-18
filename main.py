@@ -353,6 +353,62 @@ async def delete_post(post_id: int, my_id: str = Query(...)):
         db.close()
 
 
+# GET MEMORIES FEED (EACH MEMORY LASTS 60 DAYS)
+@app.get("/memories/feed")
+async def get_memories_feed(my_id: str):
+    db = SessionLocal()
+    try:
+        # 1. Find all partners
+        relations = db.query(Relationship).filter(
+            or_(Relationship.user1ldrid == my_id, Relationship.user2ldrid == my_id)
+        ).all()
+        partner_ids = [r.user2ldrid if r.user1ldrid == my_id else r.user1ldrid for r in relations]
+        all_involved_ids = partner_ids + [my_id]
+
+        # 2. Get posts from the last 60 days
+        sixty_days_ago = datetime.utcnow() - timedelta(days=60)
+        posts = db.query(LocketPost).filter(
+            LocketPost.sender_id.in_(all_involved_ids),
+            LocketPost.created_at >= sixty_days_ago
+        ).order_by(LocketPost.created_at.desc()).all()
+
+        results = []
+        for post in posts:
+            author = db.query(User).filter(User.ldrid == post.sender_id).first()
+            is_owner = (post.sender_id == my_id)
+
+            # ONLY the owner can see who reacted and what their reaction was
+            reactions_data = []
+            if is_owner:
+                rx_records = db.query(LocketReaction).filter(LocketReaction.post_id == post.id).all()
+                for rx in rx_records:
+                    reactor = db.query(User).filter(User.ldrid == rx.reactor_id).first()
+                    reactions_data.append({
+                        "reactor_name": reactor.name if reactor else "Partner",
+                        "reaction": rx.reaction
+                    })
+
+            # Detect if media is video or image
+            media_type = getattr(post, 'media_type', 'IMAGE')
+            if not media_type:
+                media_type = 'VIDEO' if any(post.image_url.lower().endswith(ext) for ext in ['.mp4', '.mov', '.mkv']) else 'IMAGE'
+
+            results.append({
+                "id": post.id,
+                "sender_id": post.sender_id,
+                "sender_name": author.name if author else "Partner",
+                "media_url": post.image_url,
+                "media_type": media_type,
+                "caption": post.caption,
+                "created_at": post.created_at.strftime("%b %d, %Y"),
+                "is_owner": is_owner,
+                "reactions": reactions_data
+            })
+        return results
+    finally:
+        db.close()
+
+
 # class LocketPost(Base):
 #     __tablename__ = "locket_posts"
 #     id = Column(Integer, primary_key=True, index=True)
