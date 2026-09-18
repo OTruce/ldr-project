@@ -205,6 +205,35 @@ class LocketReaction(Base):
     reaction = Column(String)
 
 # 1. UPLOAD REAL PHOTO FROM CAMERA
+# @app.post("/locket/upload")
+# async def upload_locket_photo(
+#     sender_id: str = Form(...),
+#     caption: str = Form(None),
+#     file: UploadFile = File(...)
+# ):
+#     db = SessionLocal()
+#     try:
+#         # Read file bytes & generate filename
+#         file_bytes = await file.read()
+#         file_name = f"{sender_id}_{uuid.uuid4().hex[:8]}.jpg"
+
+#         # Upload to Supabase Storage bucket 'locket_images'
+#         supabase.storage.from_("locket_images").upload(
+#             file_name,
+#             file_bytes,
+#             file_options={"content-type": "image/jpeg"}
+#         )
+#         public_url = supabase.storage.from_("locket_images").get_public_url(file_name)
+
+#         post = LocketPost(sender_id=sender_id, image_url=public_url, caption=caption)
+#         db.add(post)
+#         db.commit()
+#         return {"status": "SUCCESS", "post_id": post.id, "image_url": public_url}
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
+#     finally:
+#         db.close()
+
 @app.post("/locket/upload")
 async def upload_locket_photo(
     sender_id: str = Form(...),
@@ -213,19 +242,27 @@ async def upload_locket_photo(
 ):
     db = SessionLocal()
     try:
-        # Read file bytes & generate filename
         file_bytes = await file.read()
-        file_name = f"{sender_id}_{uuid.uuid4().hex[:8]}.jpg"
+        file_ext = file.filename.split(".")[-1].lower() if "." in file.filename else "jpg"
+        file_name = f"{sender_id}_{uuid.uuid4().hex[:8]}.{file_ext}"
 
-        # Upload to Supabase Storage bucket 'locket_images'
+        is_video = file_ext in ["mp4", "mov", "mkv", "3gp"]
+        media_type = "VIDEO" if is_video else "IMAGE"
+        content_type = "video/mp4" if is_video else "image/jpeg"
+
         supabase.storage.from_("locket_images").upload(
             file_name,
             file_bytes,
-            file_options={"content-type": "image/jpeg"}
+            file_options={"content-type": content_type}
         )
         public_url = supabase.storage.from_("locket_images").get_public_url(file_name)
 
-        post = LocketPost(sender_id=sender_id, image_url=public_url, caption=caption)
+        post = LocketPost(
+            sender_id=sender_id,
+            image_url=public_url,
+            caption=caption,
+            media_type=media_type
+        )
         db.add(post)
         db.commit()
         return {"status": "SUCCESS", "post_id": post.id, "image_url": public_url}
