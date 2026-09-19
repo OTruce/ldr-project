@@ -200,7 +200,7 @@ async def get_partners(my_id: str):
                 # Check connection status from devices table
                 device_rec = db.query(Device).filter(Device.deviceid == p_user.deviceid).first()
                 conn_status = device_rec.connection if device_rec and device_rec.connection else "offline"
-                bluetooth = device_rec.bt_status if device_rec and device_rec.bt_status else "Away"
+                bluetooth = device_rec.bt_status if device_rec and device_rec.bt_status else "inactive"
 
                 partners.append({
                     "name": p_user.name,
