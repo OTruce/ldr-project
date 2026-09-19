@@ -56,6 +56,7 @@ class Device(Base):
     __tablename__ = "devices"
     deviceid = Column(String, primary_key=True)
     connection = Column(String, default="offline") # "online" or "offline"
+    bt_status = Column(String, default="inactive") # "active" or "inactive"
 
 class TextColor(Base):
     __tablename__ = "text_colors"
@@ -199,13 +200,15 @@ async def get_partners(my_id: str):
                 # Check connection status from devices table
                 device_rec = db.query(Device).filter(Device.deviceid == p_user.deviceid).first()
                 conn_status = device_rec.connection if device_rec and device_rec.connection else "offline"
+                bluetooth = device_rec.bt_status if device_rec and device_rec.bt_status else "Away"
 
                 partners.append({
                     "name": p_user.name,
                     "ldrid": p_user.ldrid,
                     "type": rel.relationship,
                     "image_url": p_user.image_url,
-                    "connection": conn_status.lower() # "online" or "offline"
+                    "connection": conn_status.lower(), # "online" or "offline"
+                    "bt_status": bluetooth.lower() #"nearby" or "away"
                 })
         return partners
     finally:
