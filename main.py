@@ -31,6 +31,59 @@ SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
+
+
+# --- 2. MODELS ---
+
+class User(Base):
+    __tablename__ = "users"
+    ldrid = Column(String, primary_key=True)
+    name = Column(String)
+    email = Column(String, unique=True)
+    deviceid = Column(String)
+    phone = Column(String, nullable=True)
+    image_url = Column(String, nullable=True) # Profile picture URL
+    gender = Column(String, default="male")   # "male" or "female"
+
+class Relationship(Base):
+    __tablename__ = "relationships"
+    id = Column(Integer, primary_key=True)
+    user1ldrid = Column(String)
+    user2ldrid = Column(String)
+    relationship = Column(String)
+
+class Device(Base):
+    __tablename__ = "devices"
+    deviceid = Column(String, primary_key=True)
+    connection = Column(String, default="offline") # "online" or "offline"
+
+class TextColor(Base):
+    __tablename__ = "text_colors"
+    textid = Column(Integer, primary_key=True)
+    text = Column(String)
+    color = Column(String)
+    color_code = Column(String) # The Hex code e.g. #FF0000
+    emoji_male = Column(String, nullable=True)   # URL for male user
+    emoji_female = Column(String, nullable=True) # URL for female user
+
+class VibeLog(Base):
+    __tablename__ = "vibe_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    sender_ldrid = Column(String)
+    receiver_ldrid = Column(String)
+    vibe_type = Column(String)
+    hex_color = Column(String)
+    status = Column(String, default="pending")
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+class OtpCode(Base):
+    __tablename__ = "otp_codes"
+    email = Column(String, primary_key=True)
+    code = Column(String)
+
+app = FastAPI()
+
+
 # Code for OTP checks
 # ==========================================
 # 1. HEALTH CHECK ROUTE (For Keep-Alive & Cron)
@@ -127,56 +180,6 @@ async def verify_otp(email: str, otp: str):
         raise HTTPException(status_code=401, detail="Invalid OTP code")
     finally:
         db.close()
-
-# --- 2. MODELS ---
-
-class User(Base):
-    __tablename__ = "users"
-    ldrid = Column(String, primary_key=True)
-    name = Column(String)
-    email = Column(String, unique=True)
-    deviceid = Column(String)
-    phone = Column(String, nullable=True)
-    image_url = Column(String, nullable=True) # Profile picture URL
-    gender = Column(String, default="male")   # "male" or "female"
-
-class Relationship(Base):
-    __tablename__ = "relationships"
-    id = Column(Integer, primary_key=True)
-    user1ldrid = Column(String)
-    user2ldrid = Column(String)
-    relationship = Column(String)
-
-class Device(Base):
-    __tablename__ = "devices"
-    deviceid = Column(String, primary_key=True)
-    connection = Column(String, default="offline") # "online" or "offline"
-
-class TextColor(Base):
-    __tablename__ = "text_colors"
-    textid = Column(Integer, primary_key=True)
-    text = Column(String)
-    color = Column(String)
-    color_code = Column(String) # The Hex code e.g. #FF0000
-    emoji_male = Column(String, nullable=True)   # URL for male user
-    emoji_female = Column(String, nullable=True) # URL for female user
-
-class VibeLog(Base):
-    __tablename__ = "vibe_logs"
-    id = Column(Integer, primary_key=True, index=True)
-    sender_ldrid = Column(String)
-    receiver_ldrid = Column(String)
-    vibe_type = Column(String)
-    hex_color = Column(String)
-    status = Column(String, default="pending")
-    timestamp = Column(DateTime, default=datetime.utcnow)
-
-class OtpCode(Base):
-    __tablename__ = "otp_codes"
-    email = Column(String, primary_key=True)
-    code = Column(String)
-
-app = FastAPI()
 
 # --- 3. ROUTES ---
 
