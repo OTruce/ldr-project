@@ -21,12 +21,112 @@ if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, connect_args={"sslmode": "require"})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+resend.api_key = os.getenv("RESEND_API_KEY")
+
 
 # Supabase Storage Client
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+# Code for OTP checks
+# ==========================================
+# 1. HEALTH CHECK ROUTE (For Keep-Alive & Cron)
+# ==========================================
+@app.get("/")
+@app.get("/health")
+def health_check():
+    """Tiny endpoint for WorkManager and Cron-job to keep the server awake."""
+    return "ok"
+
+
+# ==========================================
+# 2. REQUEST OTP ROUTE (Generates & Emails Code)
+# ==========================================
+@app.post("/request-otp")
+async def request_otp(email: str):
+    db = SessionLocal()
+    try:
+        clean_email = email.strip().lower()
+
+        # Generate a secure random 6-digit code
+        otp_val = str(random.randint(100000, 999999))
+
+        # Save or update the OTP in the otp_codes table
+        db.execute(text(
+            "INSERT INTO otp_codes (email, code) VALUES (:e, :c) "
+            "ON CONFLICT (email) DO UPDATE SET code = :c"
+        ), {"e": clean_email, "c": otp_val})
+        db.commit()
+
+        # Send email via Resend
+        try:
+            resend.Emails.send({
+                "from": "LDR Lamp <onboarding@resend.dev>",
+                "to": [clean_email],
+                "subject": f"{otp_val} is your login code",
+                "html": f"""
+                    <div style="font-family: sans-serif; padding: 20px;">
+                        <h2>Your Login Code</h2>
+                        <p style="font-size: 32px; font-weight: bold; letter-spacing: 4px; color: #4F46E5;">
+                            {otp_val}
+                        </p>
+                        <p style="color: #6B7280;">Enter this code in your LDR App to log in.</p>
+                    </div>
+                """
+            })
+        except Exception as email_err:
+            print(f"Resend Email Error: {email_err}")
+            raise HTTPException(status_code=500, detail=f"Failed to send email: {str(email_err)}")
+
+        return {"status": "OTP_SENT"}
+    finally:
+        db.close()
+
+
+# ==========================================
+# 3. VERIFY OTP ROUTE (Logs In & Returns User Profile)
+# ==========================================
+@app.post("/verify-otp")
+async def verify_otp(email: str, otp: str):
+    db = SessionLocal()
+    try:
+        clean_email = email.strip().lower()
+
+        # Check if the code matches what we stored
+        record = db.query(OtpCode).filter(OtpCode.email == clean_email).first()
+
+        if record and record.code == otp.strip():
+            # Code is valid! Now retrieve user profile
+            user = db.query(User).filter(User.email.ilike(clean_email)).first()
+
+            # Delete the used code so it cannot be reused
+            db.delete(record)
+            db.commit()
+
+            if user:
+                return {
+                    "status": "SUCCESS",
+                    "ldrid": user.ldrid,
+                    "name": user.name,
+                    "gender": user.gender if user.gender else "male",
+                    "image_url": user.image_url
+                }
+            else:
+                # Fallback if user record wasn't manually created yet
+                return {
+                    "status": "SUCCESS",
+                    "ldrid": "guest",
+                    "name": "User",
+                    "gender": "male",
+                    "image_url": None
+                }
+
+        raise HTTPException(status_code=401, detail="Invalid OTP code")
+    finally:
+        db.close()
 
 # --- 2. MODELS ---
 
@@ -36,6 +136,9 @@ class User(Base):
     name = Column(String)
     email = Column(String, unique=True)
     deviceid = Column(String)
+    phone = Column(String, nullable=True)
+    image_url = Column(String, nullable=True) # Profile picture URL
+    gender = Column(String, default="male")   # "male" or "female"
 
 class Relationship(Base):
     __tablename__ = "relationships"
@@ -44,12 +147,19 @@ class Relationship(Base):
     user2ldrid = Column(String)
     relationship = Column(String)
 
+class Device(Base):
+    __tablename__ = "devices"
+    deviceid = Column(String, primary_key=True)
+    connection = Column(String, default="offline") # "online" or "offline"
+
 class TextColor(Base):
     __tablename__ = "text_colors"
     textid = Column(Integer, primary_key=True)
     text = Column(String)
     color = Column(String)
     color_code = Column(String) # The Hex code e.g. #FF0000
+    emoji_male = Column(String, nullable=True)   # URL for male user
+    emoji_female = Column(String, nullable=True) # URL for female user
 
 class VibeLog(Base):
     __tablename__ = "vibe_logs"
@@ -73,15 +183,30 @@ app = FastAPI()
 @app.get("/get-partners")
 async def get_partners(my_id: str):
     db = SessionLocal()
-    rel_list = db.query(Relationship).filter(or_(Relationship.user1ldrid == my_id, Relationship.user2ldrid == my_id)).all()
-    partners = []
-    for rel in rel_list:
-        p_id = rel.user2ldrid if rel.user1ldrid == my_id else rel.user1ldrid
-        p_user = db.query(User).filter(User.ldrid == p_id).first()
-        if p_user:
-            partners.append({"name": p_user.name, "ldrid": p_user.ldrid, "type": rel.relationship})
-    db.close()
-    return partners
+    try:
+        rel_list = db.query(Relationship).filter(
+            or_(Relationship.user1ldrid == my_id, Relationship.user2ldrid == my_id)
+        ).all()
+        
+        partners = []
+        for rel in rel_list:
+            p_id = rel.user2ldrid if rel.user1ldrid == my_id else rel.user1ldrid
+            p_user = db.query(User).filter(User.ldrid == p_id).first()
+            if p_user:
+                # Check connection status from devices table
+                device_rec = db.query(Device).filter(Device.deviceid == p_user.deviceid).first()
+                conn_status = device_rec.connection if device_rec and device_rec.connection else "offline"
+
+                partners.append({
+                    "name": p_user.name,
+                    "ldrid": p_user.ldrid,
+                    "type": rel.relationship,
+                    "image_url": p_user.image_url,
+                    "connection": conn_status.lower() # "online" or "offline"
+                })
+        return partners
+    finally:
+        db.close()
 
 @app.get("/get-text-colors")
 async def get_vibes():
@@ -203,36 +328,6 @@ class LocketReaction(Base):
     post_id = Column(Integer)
     reactor_id = Column(String)
     reaction = Column(String)
-
-# 1. UPLOAD REAL PHOTO FROM CAMERA
-# @app.post("/locket/upload")
-# async def upload_locket_photo(
-#     sender_id: str = Form(...),
-#     caption: str = Form(None),
-#     file: UploadFile = File(...)
-# ):
-#     db = SessionLocal()
-#     try:
-#         # Read file bytes & generate filename
-#         file_bytes = await file.read()
-#         file_name = f"{sender_id}_{uuid.uuid4().hex[:8]}.jpg"
-
-#         # Upload to Supabase Storage bucket 'locket_images'
-#         supabase.storage.from_("locket_images").upload(
-#             file_name,
-#             file_bytes,
-#             file_options={"content-type": "image/jpeg"}
-#         )
-#         public_url = supabase.storage.from_("locket_images").get_public_url(file_name)
-
-#         post = LocketPost(sender_id=sender_id, image_url=public_url, caption=caption)
-#         db.add(post)
-#         db.commit()
-#         return {"status": "SUCCESS", "post_id": post.id, "image_url": public_url}
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
-#     finally:
-#         db.close()
 
 @app.post("/locket/upload")
 async def upload_locket_photo(
@@ -444,108 +539,6 @@ async def get_memories_feed(my_id: str):
         return results
     finally:
         db.close()
-
-
-# class LocketPost(Base):
-#     __tablename__ = "locket_posts"
-#     id = Column(Integer, primary_key=True, index=True)
-#     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-#     sender_id = Column(String)
-#     image_url = Column(Text)
-#     caption = Column(String, nullable=True)
-
-# class LocketReaction(Base):
-#     __tablename__ = "locket_reactions"
-#     id = Column(Integer, primary_key=True, index=True)
-#     post_id = Column(Integer)
-#     reactor_id = Column(String)
-#     reaction = Column(String)
-
-# # 1. Post a photo (Broadcast to all partners)
-# @app.post("/locket/post")
-# async def create_locket_post(
-#     sender_id: str = Form(...),
-#     image_url: str = Form(...),
-#     caption: str = Form(None)
-# ):
-#     db = SessionLocal()
-#     try:
-#         post = LocketPost(sender_id=sender_id, image_url=image_url, caption=caption)
-#         db.add(post)
-#         db.commit()
-#         return {"status": "SUCCESS"}
-#     finally:
-#         db.close()
-
-# # 2. Get active feed (all photos from all your linked partners in last 24h)
-# @app.get("/locket/feed")
-# async def get_locket_feed(my_id: str):
-#     db = SessionLocal()
-#     try:
-#         # Step A: Find all partner IDs connected to you
-#         relations = db.query(Relationship).filter(
-#             or_(Relationship.user1ldrid == my_id, Relationship.user2ldrid == my_id)
-#         ).all()
-
-#         partner_ids = [
-#             r.user2ldrid if r.user1ldrid == my_id else r.user1ldrid
-#             for r in relations
-#         ]
-
-#         if not partner_ids:
-#             return []
-
-#         # Step B: Get posts from all partners within the last 24 hours
-#         twenty_four_hours_ago = datetime.utcnow() - timedelta(hours=24)
-#         posts = db.query(LocketPost).filter(
-#             LocketPost.sender_id.in_(partner_ids),
-#             LocketPost.created_at >= twenty_four_hours_ago
-#         ).order_by(LocketPost.created_at.desc()).all()
-
-#         # Step C: Attach sender's name and partner's reaction
-#         feed_items = []
-#         for post in posts:
-#             author = db.query(User).filter(User.ldrid == post.sender_id).first()
-#             my_reaction = db.query(LocketReaction).filter(
-#                 LocketReaction.post_id == post.id,
-#                 LocketReaction.reactor_id == my_id
-#             ).first()
-
-#             feed_items.append({
-#                 "id": post.id,
-#                 "sender_id": post.sender_id,
-#                 "sender_name": author.name if author else "Partner",
-#                 "image_url": post.image_url,
-#                 "caption": post.caption,
-#                 "created_at": post.created_at.isoformat(),
-#                 "my_reaction": my_reaction.reaction if my_reaction else None
-#             })
-
-#         return feed_items
-#     finally:
-#         db.close()
-
-# # 3. React to a post
-# @app.post("/locket/react")
-# async def react_to_post(post_id: int = Query(...), reactor_id: str = Query(...), reaction: str = Query(...)):
-#     db = SessionLocal()
-#     try:
-#         # Upsert reaction: replace or create
-#         existing = db.query(LocketReaction).filter(
-#             LocketReaction.post_id == post_id,
-#             LocketReaction.reactor_id == reactor_id
-#         ).first()
-
-#         if existing:
-#             existing.reaction = reaction
-#         else:
-#             db.add(LocketReaction(post_id=post_id, reactor_id=reactor_id, reaction=reaction))
-
-#         db.commit()
-#         return {"status": "SUCCESS"}
-#     finally:
-#         db.close()
-
 
 
 # Include your existing request-otp, verify-otp, and health routes here...
